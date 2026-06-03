@@ -2,7 +2,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import yt_dlp
-import re
+import ssl
+import certifi
 
 app = FastAPI(title="VidSnap API", version="1.0.0")
 
@@ -24,7 +25,6 @@ class URLRequest(BaseModel):
     url: str
 
 def clean_quality(fmt):
-    """Return a clean quality label from yt-dlp format info."""
     h = fmt.get("height")
     if h:
         if h >= 2160: return "4K"
@@ -55,8 +55,17 @@ def download(url: str):
         "no_warnings": True,
         "skip_download": True,
         "noplaylist": True,
-        "cookiesfrombrowser": None,
-        "extractor_args": {},
+        # SSL fix
+        "nocheckcertificate": True,
+        # Better headers to avoid blocks
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+        # Extractor args for TikTok
+        "extractor_args": {
+            "tiktok": {"app_version": ["35.1.3"], "manifest_app_version": ["2023105030"]},
+        },
     }
 
     try:
@@ -76,7 +85,7 @@ def download(url: str):
     formats_raw = info.get("formats") or []
     medias = []
 
-    # --- Video formats (with audio merged or has audio) ---
+    # --- Video formats ---
     video_fmts = []
     for f in formats_raw:
         vcodec = f.get("vcodec", "none")
@@ -89,7 +98,6 @@ def download(url: str):
             continue
         if vcodec == "none" or not vcodec:
             continue
-        # prefer formats that have both video+audio
         has_audio = acodec and acodec != "none"
         if height and height >= 144:
             video_fmts.append({
@@ -101,10 +109,8 @@ def download(url: str):
                 "tbr": f.get("tbr", 0) or 0
             })
 
-    # Sort by height desc, prefer has_audio
     video_fmts.sort(key=lambda x: (x["height"], x["has_audio"], x["tbr"]), reverse=True)
 
-    # Deduplicate by quality label — keep best per quality
     seen_q = {}
     for vf in video_fmts:
         q = vf["quality"]
@@ -144,7 +150,7 @@ def download(url: str):
             "type":      "audio"
         })
 
-    # Fallback — if no formats parsed, use direct url
+    # Fallback
     if not medias and info.get("url"):
         medias.append({
             "url":       info["url"],
